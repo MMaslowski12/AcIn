@@ -10,3 +10,7 @@ class World:
     def act(self):
         pass
     
+    def move(self):
+        import random
+        self.x += random.choice([-1, 1])
+

@@ -1,20 +1,6 @@
-# This file has been split into two files:
-# - agent.py: Contains the Agent class implementation
-# - run_simulation.py: Contains the code to run the simulation
-
-# Please use those files instead of this one.
-
 from normal import Normal, Linear
 from World import World
 import numpy as np
-
-'''
-Experiment to see if this generally works
-Get better learning rates and optimizers
-Decide what to do with the fact that I model it with easy normals (is it okay because ill switch to nns anyway?)
-jump to quadratics
-
-'''
 
 class Agent:
     def __init__(self, world):
@@ -37,18 +23,9 @@ class Agent:
         return self.qx.kl_divergence(self.px)
 
     def _get_accuracy(self, y):
-        return -0.5 * np.log(2 * np.pi) - np.log(self.pypx_sigma) - \
-            0.5 * ((y - self.pyx.function(self.qx.mu))**2 + self.qx.sigma**2) / self.pypx_sigma**2
-    
-    
-    def _get_accuracy(self, y):
         # Calculate expected log likelihood under q(x)
         # For normal distributions, this is -0.5*log(2*pi) - log(sigma) - 0.5*(mu_diff^2 + sigma^2)/sigma^2
 
-        '''
-        line 1: constant term + penalizing how indefinite we are about the prediction
-        Line 2: How far away p(y given x) is from actual y + sigma of the prediction, divided by how indefinite we are about the prediction
-        '''
         mu_function = self.pyx.function(self.qx.mu)
         sigma_function = self.qx.sigma*self.pyx.b1
 
@@ -64,20 +41,11 @@ class Agent:
         if y is None:
             y = self.world.observe()
 
-        # p(y|x) is a normal distribution with mean given by self.pyx.function(x) and variance self.pypx_sigma^2
-        # p(x) is a normal distribution with mean self.px.mu and variance self.px.sigma^2
-
-        # The marginal p(y) is also a normal distribution with:
-        # mean = self.pyx.function(self.px.mu)
-        # variance = self.pypx_sigma^2 + (self.pyx.b1**2) * self.px.sigma**2
-
         mean_y = self.pyx.function(self.px.mu)
         variance_y = self.pypx_sigma**2 + (self.pyx.b1**2) * self.px.sigma**2
 
-        # Calculate the surprise as -ln p(y) where p(y) is a normal distribution
         surprise = 0.5 * np.log(2 * np.pi * variance_y) + 0.5 * ((y - mean_y)**2 / variance_y)
         return surprise
-        
     
     def get_vfe(self, y=None): 
         if y is None:
@@ -152,7 +120,6 @@ class Agent:
         if self.pypx_sigma <= 0:
             self.pypx_sigma = 1e-6
         
-        
     def adjust_px(self):
         learning_rate = 1e-6
 
@@ -181,33 +148,4 @@ class Agent:
     def step(self):
         self.adjust_qx()
         self.adjust_p()
-        self.world.move()
-    
-
-    
-World = World()
-Agent = Agent(world=World)
-complexity = Agent._get_complexity()
-accuracy = Agent._get_accuracy(World.observe())
-print(f"Complexity: {complexity}")
-print(f"Accuracy: {accuracy}")
-print(f"VFE: {Agent.get_vfe()}")
-print(f"Surprise: {Agent.get_surprise()}")
-print("--------------------------------")
-for i in range(1000):
-    Agent.step()
-
-print(f"Agent qx.mu: {Agent.qx.mu}, Agent qx.sigma: {Agent.qx.sigma}")
-print(f"Agent pyx.b0: {Agent.pyx.b0}, Agent pyx.b1: {Agent.pyx.b1}, Agent pypx_sigma: {Agent.pypx_sigma}")
-print(f"Agent px.mu: {Agent.px.mu}, Agent px.sigma: {Agent.px.sigma}")
-complexity = Agent._get_complexity()
-accuracy = Agent._get_accuracy(World.observe())
-print(f"Complexity: {complexity}")
-print(f"Accuracy: {accuracy}")
-print(f"VFE: {Agent.get_vfe()}")
-print(f"Surprise: {Agent.get_surprise()}")
-
-
-
-
-
+        self.world.move() 

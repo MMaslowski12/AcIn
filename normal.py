@@ -12,6 +12,7 @@ class Normal:
             - 0.5
             + np.log(other.sigma / self.sigma)
         )
+            
 
     def pdf(self, x):
         """Calculate probability density at point x"""
