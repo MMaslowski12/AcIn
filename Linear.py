@@ -7,6 +7,7 @@
 from normal import Normal, Linear
 from World import World
 import numpy as np
+import tensorflow as tf
 
 '''
 Experiment to see if this generally works
@@ -18,11 +19,17 @@ jump to quadratics
 
 class Agent:
     def __init__(self, world):
-        self.px = Normal(0, 1)
-        self.qx = Normal(self.px.mu, self.px.sigma) #Without any data, get the most probable x
-        self.pyx = Linear(0, 5)
-        self.pypx_sigma = 1
+        # Create the probabilistic models with TF variables
+        self.px = Normal(0.0, 1.0, name='px')
+        self.qx = Normal(self.px.mu, self.px.sigma, name='qx')  # Initialize q(x) to match p(x)
+        self.pyx = Linear(0.0, 5.0, name='pyx')
+        self.pypx_sigma = tf.Variable(1.0, name='pypx_sigma')
         self.world = world
+        
+        # Initialize optimizers with appropriate learning rates
+        self.qx_optimizer = tf.keras.optimizers.Adam(learning_rate=1.0)
+        self.pyx_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-6)
+        self.px_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-6)
 
     def get_px(self, x):
         return self.px.pdf(x)
@@ -37,23 +44,11 @@ class Agent:
         return self.qx.kl_divergence(self.px)
 
     def _get_accuracy(self, y):
-        return -0.5 * np.log(2 * np.pi) - np.log(self.pypx_sigma) - \
-            0.5 * ((y - self.pyx.function(self.qx.mu))**2 + self.qx.sigma**2) / self.pypx_sigma**2
-    
-    
-    def _get_accuracy(self, y):
-        # Calculate expected log likelihood under q(x)
-        # For normal distributions, this is -0.5*log(2*pi) - log(sigma) - 0.5*(mu_diff^2 + sigma^2)/sigma^2
-
-        '''
-        line 1: constant term + penalizing how indefinite we are about the prediction
-        Line 2: How far away p(y given x) is from actual y + sigma of the prediction, divided by how indefinite we are about the prediction
-        '''
         mu_function = self.pyx.function(self.qx.mu)
-        sigma_function = self.qx.sigma*self.pyx.b1
+        sigma_function = self.qx.sigma * self.pyx.b1
 
-        return -0.5 * np.log(2*np.pi) - np.log(self.pypx_sigma) - \
-               0.5 * ((y - mu_function)**2 + sigma_function**2) / self.pypx_sigma**2 
+        return -0.5 * tf.math.log(2 * tf.constant(np.pi)) - tf.math.log(self.pypx_sigma) - \
+               0.5 * (tf.square(y - mu_function) + tf.square(sigma_function)) / tf.square(self.pypx_sigma)
     
     def get_surprise(self, y=None):
         """
@@ -64,19 +59,15 @@ class Agent:
         if y is None:
             y = self.world.observe()
 
-        # p(y|x) is a normal distribution with mean given by self.pyx.function(x) and variance self.pypx_sigma^2
-        # p(x) is a normal distribution with mean self.px.mu and variance self.px.sigma^2
-
         # The marginal p(y) is also a normal distribution with:
         # mean = self.pyx.function(self.px.mu)
-        # variance = self.pypx_sigma^2 + (self.pyx.b1**2) * self.px.sigma**2
-
+        # variance = self.pypx_sigma^2 + (self.pyx.b1^2) * self.px.sigma^2
         mean_y = self.pyx.function(self.px.mu)
-        variance_y = self.pypx_sigma**2 + (self.pyx.b1**2) * self.px.sigma**2
+        variance_y = tf.square(self.pypx_sigma) + tf.square(self.pyx.b1) * tf.square(self.px.sigma)
 
         # Calculate the surprise as -ln p(y) where p(y) is a normal distribution
-        surprise = 0.5 * np.log(2 * np.pi * variance_y) + 0.5 * ((y - mean_y)**2 / variance_y)
-        return surprise
+        return 0.5 * tf.math.log(2 * tf.constant(np.pi) * variance_y) + \
+               0.5 * tf.square(y - mean_y) / variance_y
         
     
     def get_vfe(self, y=None): 
@@ -87,100 +78,55 @@ class Agent:
         accuracy = self._get_accuracy(y)
         return complexity - accuracy
     
+    def _find_gradients(self, variables, y=None):
+        """
+        Calculate gradients using TensorFlow's automatic differentiation.
+        
+        Args:
+            variables: List of variables to calculate gradients for
+            y: Optional observation value
+        
+        Returns:
+            List of gradients corresponding to variables
+        """
+        with tf.GradientTape() as tape:
+            vfe = self.get_vfe(y)
+        return tape.gradient(vfe, variables)
+
+    def _apply_gradients(self, optimizer, variables, gradients):
+        """
+        Apply gradients using the specified optimizer.
+        
+        Args:
+            optimizer: The optimizer to use
+            variables: List of variables to update
+            gradients: List of gradients corresponding to variables
+        """
+        # Apply gradients using optimizer
+        optimizer.apply_gradients(zip(gradients, variables))
+        
+        # Apply sigma positivity constraints after optimization
+        for var in variables:
+            if 'sigma' in var.name:
+                var.assign(tf.maximum(var, 1e-5))
+
     def adjust_qx(self):
-        learning_rate_mu = 1
-        learning_rate_sigma = 1
-
-        # Numerical gradient descent update for mu
-        original_mu = self.qx.mu
-        self.qx.mu += 1e-5
-        vfe_plus = self.get_vfe()
-        self.qx.mu = original_mu - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_mu = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.qx.mu = original_mu - learning_rate_mu * grad_mu
-
-        # Numerical gradient descent update for sigma
-        original_sigma = self.qx.sigma
-        self.qx.sigma += 1e-5
-        vfe_plus = self.get_vfe()
-        self.qx.sigma = original_sigma - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_sigma = (vfe_plus - vfe_minus) / (2 * 1e-5)
-
-        self.qx.sigma = original_sigma - learning_rate_sigma * grad_sigma
-
-        # Ensure sigma remains positive
-        if self.qx.sigma <= 0:
-            self.qx.sigma = 2e-5
-
-    def adjust_p(self):
-        self.adjust_pyx()
-        self.adjust_px()
+        gradients = self._find_gradients(self.qx.trainable_variables)
+        self._apply_gradients(self.qx_optimizer, self.qx.trainable_variables, gradients)
 
     def adjust_pyx(self):
-        learning_rate = 1e-6
+        variables = self.pyx.trainable_variables + [self.pypx_sigma]
+        gradients = self._find_gradients(variables)
+        self._apply_gradients(self.pyx_optimizer, variables, gradients)
 
-        # Numerical gradient descent update for b0
-        original_b0 = self.pyx.b0
-        self.pyx.b0 += 1e-5
-        vfe_plus = self.get_vfe()
-        self.pyx.b0 = original_b0 - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_b0 = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.pyx.b0 = original_b0 - learning_rate * grad_b0
-
-        # Numerical gradient descent update for b1
-        original_b1 = self.pyx.b1
-        self.pyx.b1 += 1e-5
-        vfe_plus = self.get_vfe()
-        self.pyx.b1 = original_b1 - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_b1 = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.pyx.b1 = original_b1 - learning_rate * grad_b1
-
-        # Adjust sigma of pyx
-        original_sigma = self.pypx_sigma
-        self.pypx_sigma += 1e-5
-        vfe_plus = self.get_vfe()
-        self.pypx_sigma = original_sigma - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_sigma = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.pypx_sigma = original_sigma - learning_rate * grad_sigma
-
-        # Ensure sigma remains positive
-        if self.pypx_sigma <= 0:
-            self.pypx_sigma = 1e-6
-        
-        
     def adjust_px(self):
-        learning_rate = 1e-6
-
-        # Numerical gradient descent update for mu
-        original_mu = self.px.mu
-        self.px.mu += 1e-5
-        vfe_plus = self.get_vfe()
-        self.px.mu = original_mu - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_mu = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.px.mu = original_mu - learning_rate * grad_mu  
-
-        # Numerical gradient descent update for sigma
-        original_sigma = self.px.sigma
-        self.px.sigma += 1e-5
-        vfe_plus = self.get_vfe()
-        self.px.sigma = original_sigma - 1e-5
-        vfe_minus = self.get_vfe()
-        grad_sigma = (vfe_plus - vfe_minus) / (2 * 1e-5)
-        self.px.sigma = original_sigma - learning_rate * grad_sigma
-
-        # Ensure sigma remains positive
-        if self.px.sigma <= 0:
-            self.px.sigma = 1e-6
+        gradients = self._find_gradients(self.px.trainable_variables)
+        self._apply_gradients(self.px_optimizer, self.px.trainable_variables, gradients)
 
     def step(self):
         self.adjust_qx()
-        self.adjust_p()
+        self.adjust_pyx()
+        self.adjust_px()
         self.world.move()
     
 
